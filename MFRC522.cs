@@ -1,9 +1,11 @@
 // MFRC522 documentation link: https://www.nxp.com/docs/en/data-sheet/MFRC522.pdf
 
 using System;
+using System.Collections.Generic;
 using System.Device.Gpio;
 using System.Device.Spi;
 using System.Linq;
+using System.Text;
 
 namespace RFID522
 {
@@ -12,24 +14,33 @@ namespace RFID522
         private const byte CommandReg = 0x01; // Starts and stops command execution.
         private const byte ComIEnReg = 0x02; // Control bits to enable and disable the passing of interrupt requests.
         private const byte ComIrqReg = 0x04; // Interrupt request bits.
+        private const byte ErrorReg = 0x06; // Error bit register showing the error status of the last command executed.
         private const byte FIFODataReg = 0x09; // Input and output of 64 byte FIFO buffer.
         private const byte FIFOLevelReg = 0x0A; // Indicates the number of bytes stored in the FIFO.
+        private const byte WaterLevelReg = 0x0B; // Defines the level for FIFO under- and overflow warning.
+        private const byte ControlReg = 0x0C; // Miscellaneous control bits.
         private const byte BitFramingReg = 0x0D; // Adjustments for bit-oriented frames.
         private const byte ModeReg = 0x11; // Defines general mode settings for transmitting and receiving.
+        private const byte TxModeReg = 0x12; // Defines the data rate during transmission.
+        private const byte RxModeReg = 0x13; // Defines the data rate during reception.
         private const byte TxControlReg = 0x14; // Controls the logical behavior of the antenna driver pins TX1 and TX2.
         private const byte TxASKReg = 0x15; // Controls transmit modulation settings.
+        private const byte ModWidthReg = 0x24; // Sets the modulation width.
         private const byte TModeReg = 0x2A; // Defines the timer settings.
         private const byte TPrescalerReg = 0x2B; // Defines the timer settings.
         private const byte TReloadRegH = 0x2C; // Defines the 16-bit timer reload value (high 8 bit).
         private const byte TReloadRegL = 0x2D; // Defines the 16-bit timer reload value (low 8 bit).
+        private const byte TCounterValRegH = 0x2E; // The timer value bits are contained in two 8-bit registers.
+        private const byte TCounterValRegL = 0x2F; // The timer value bits are contained in two 8-bit registers.
+
         private const byte AutoTestReg = 0x36; // Controls the digital self-test.
         private const byte VersionReg = 0x37; // Shows the MFRC522 software version.
 
         private const byte Command_Idle = 0x00;
         private const byte Command_Mem = 0x01;
         private const byte Command_CalcCRC = 0x03;
-        private const byte Command_Authenticate = 0x0E;
         private const byte Command_Transceive = 0x0C;
+        private const byte Command_Authenticate = 0x0E;
         private const byte Command_SoftReset = 0x0F;
 
         private const byte IRQControlBit_TimerIEn = 0x01;
@@ -41,12 +52,25 @@ namespace RFID522
         private const byte IRQControlBit_TxIEn = 0x40;
         private const byte IRQControlBit_IRqInv = 0x80;
 
+        private const byte TxControlReg_Tx1RFEn_bit = 0x01;
+        private const byte TxControlReg_Tx2RFEn_bit = 0x02;
+
+        private const byte ErrorReg_ProtocolErr_bit = 0x01;
+        private const byte ErrorReg_ParityErr_bit = 0x02;
+        private const byte ErrorReg_CRCErr_bit = 0x04;
+        private const byte ErrorReg_CollErr_bit = 0x08;
+        private const byte ErrorReg_BufferOvfl_bit = 0x10;
+        private const byte ErrorReg_Reserved_bit = 0x20;
+        private const byte ErrorReg_TempErr_bit = 0x40;
+        private const byte ErrorReg_WrErr_bit = 0x80;
+
         private const byte AutoTestReg_DefaultOperationMode = 0x00;
         private const byte ComIrqReg_ControlBit_Set1 = 0x80;
         private const byte FIFOLevelReg_FlushFifoBuffer = 0x80;
         private const byte AutoTestReg_EnableSelfTest = 0x09;
         private const byte TxASKReg_Force100ASK = 0x40;
         private const byte BitFramingReg_StartSend = 0x80;
+        private const byte ControlReg_RxLastBits = 0x07;
 
         private readonly GpioController _controller;
         private readonly SpiDevice _spiDevice;
@@ -66,41 +90,60 @@ namespace RFID522
 
             this.WriteRegister(MFRC522.CommandReg, MFRC522.Command_SoftReset);
 
-            this.WriteRegister(MFRC522.TPrescalerReg, 0x3E); //00111110b -> set as PreScaler lower 8 bits
-
-            var checkValue = this.ReadRegister(MFRC522.TPrescalerReg);
-
             // The following 4 lines set the timer scale and the timer timeout
-            this.WriteRegister(MFRC522.TModeReg, 0x8D); //10001101b -> set 1101 as PreScaler higher 4 bits and set TAuto bit to 1
-            this.WriteRegister(MFRC522.TPrescalerReg, 0x3E); //00111110b -> set as PreScaler lower 8 bits
-            this.WriteRegister(MFRC522.TReloadRegL, 30);
-            this.WriteRegister(MFRC522.TReloadRegH, 0);
+            // PreScaler=0x0D3E -> timer tick interval downscaled to: 13.56 MHz / (2*PreScaler+1) = 2000 Hz = 0.0005 s = 0.5 ms
+            // reload value = 30 - timeout happens within 30 * 0.5 ms = 15 ms.
+            this.WriteRegister(MFRC522.TModeReg, 0x8D); // PreScaler high 4 bits(0x0D) + set TAuto (0x80) bit to 1
+            this.WriteRegister(MFRC522.TPrescalerReg, 0x3E); // PreScaler lower 8 bits
+
+            this.WriteRegister(MFRC522.TReloadRegL, 0x1D);
+            this.WriteRegister(MFRC522.TReloadRegH, 0x0);
 
             //force using ASK (amplitude shift keying) modulation
             this.WriteRegister(MFRC522.TxASKReg, MFRC522.TxASKReg_Force100ASK);
-            this.WriteRegister(MFRC522.ModeReg, 0x3D); //00111101b -> CRC preset value to 6363h
-
-            this.AntennaOn();
+            this.WriteRegister(MFRC522.ModeReg, 0x3D); // CRC preset value to 6363h
         }
 
         // Invites PICCs in state IDLE to go to READY and prepare for anticollision or selection. 7 bit frame.
-        public(byte status, int backBits) Request(byte requestMode)
+        public Status Request(byte requestMode)
         {
+            this.AntennaOn();
+
             byte[] tagType = new byte[1]
             {
                 requestMode
             };
 
-            this.WriteRegister(MFRC522.BitFramingReg, 0x07); // number of bits in the last byte to be transmitted - for requests, the frame size is 7 bits.
+            // Number of bits in the last byte to be transmitted - for requests, the frame size is 7 bits.
+            this.WriteRegister(MFRC522.BitFramingReg, 0x07);
 
             var(status, backData, backBits) = SendCommand(Command_Transceive, tagType);
 
-            if ((status != 0) | (backBits != 0x10))
-            {
-                status = 2;
-            }
+            this.AntennaOff();
 
-            return (status, backBits);
+            return status;
+        }
+
+        public (Status status, byte[] serialNumber) AntiCollision(byte collisionCommand)
+        {
+            var serialNumber = new List<byte>();
+
+            this.AntennaOn();
+
+            // Number of bits in the last byte to be transmitted - for requests, the frame size is 8 bits (= 000b must be set to framing reg 0..2 bits).
+            this.WriteRegister(MFRC522.BitFramingReg, 0x00);
+
+            byte[] serialNumberReqData = new byte[2]
+            {
+                collisionCommand,
+                0x20
+            };
+
+            var(status, backData, backBits) = SendCommand(Command_Transceive, serialNumberReqData);
+
+            this.AntennaOff();
+
+            return (status, backData);
         }
 
         public void SelfTest()
@@ -151,15 +194,13 @@ namespace RFID522
             this.WriteVersionAndSelfTestResult(version, selfTestResult);
         }
 
-        private(byte status, byte[] backData, byte backLen) SendCommand(byte command, byte[] sendData)
+        private(Status status, byte[] backData, int backLen) SendCommand(byte command, byte[] sendData)
         {
-            byte[] backData = new byte[64];
-            byte backLen = 0;
-            byte status = 2;
+            var backData = new List<byte>();
+            int backLen = 0;
+            Status status = Status.NoTag;
             byte enabledIrqRequestTypes = 0x00;
             byte waitForIrqTypes = 0x00;
-            byte n = 0;
-            var i = 0;
 
             switch (command)
             {
@@ -171,11 +212,12 @@ namespace RFID522
                 case MFRC522.Command_Transceive:
                     enabledIrqRequestTypes = MFRC522.IRQControlBit_TimerIEn | MFRC522.IRQControlBit_ErrIEn | MFRC522.IRQControlBit_LoAlertIEn |
                         MFRC522.IRQControlBit_IdleIEn | MFRC522.IRQControlBit_RxIEn | MFRC522.IRQControlBit_TxIEn;
-                    waitForIrqTypes = MFRC522.IRQControlBit_IdleIEn | MFRC522.IRQControlBit_RxIEn;
+                    waitForIrqTypes = MFRC522.IRQControlBit_RxIEn;
                     break;
             }
             // enable required IRQ types
-            this.WriteRegister(MFRC522.ComIEnReg, (byte) (enabledIrqRequestTypes | MFRC522.IRQControlBit_IRqInv));
+            this.WriteRegister(MFRC522.ComIEnReg, (byte) (enabledIrqRequestTypes | IRQControlBit_IRqInv));
+
             // Indicate that the marked bits in the ComIrqReg register are cleared (=IMO clear the IRQ bits)
             this.ClearBitMaskForRegister(MFRC522.ComIrqReg, ComIrqReg_ControlBit_Set1);
             // Flush FIFO buffer
@@ -186,9 +228,9 @@ namespace RFID522
             int dataBytePointer = 0;
             while (dataBytePointer < sendData.Length)
             {
-                this.WriteRegister(MFRC522.FIFODataReg, sendData[dataBytePointer]);
-                dataBytePointer++;
+                this.WriteRegister(MFRC522.FIFODataReg, sendData[dataBytePointer++]);
             }
+
             // execute the command
             this.WriteRegister(MFRC522.CommandReg, command);
             // start the transceive command
@@ -197,63 +239,65 @@ namespace RFID522
                 this.SetBitMaskForRegister(MFRC522.BitFramingReg, MFRC522.BitFramingReg_StartSend);
             }
 
-            i = 2000;
+            byte currentIRQbits;
+            int numberOfCycles = 2000;
             do
             {
-                n = this.ReadRegister(MFRC522.ComIrqReg);
+                currentIRQbits = this.ReadRegister(MFRC522.ComIrqReg);
+                numberOfCycles--;
             }
-            while (--i != 0 && (n & 0x01) == 0 && (n & waitForIrqTypes) == 0);
+            // run while number of cycles was not reached and timer timeout did not happen and expected interrupts were not fired 
+            while (
+                numberOfCycles != 0 &&
+                (currentIRQbits & MFRC522.IRQControlBit_TimerIEn) == 0 &&
+                (currentIRQbits & waitForIrqTypes) == 0);
 
+            // stop transceive command
             this.ClearBitMaskForRegister(MFRC522.BitFramingReg, MFRC522.BitFramingReg_StartSend);
 
-            if (i == 0) return (status, backData.ToArray(), backLen);
+            // if timer timeout interrupt was fired, no tag was found
+            if ((currentIRQbits & MFRC522.IRQControlBit_TimerIEn) == MFRC522.IRQControlBit_TimerIEn)
+            {
+                status = Status.NoTag;
+            }
+            else if ((currentIRQbits & waitForIrqTypes) > 0) // one or more of the expected IRQs were fired
+            {
+                byte errorByte = this.ReadRegister(MFRC522.ErrorReg);
+                byte fatalErrorsMask = MFRC522.ErrorReg_ProtocolErr_bit | MFRC522.ErrorReg_ParityErr_bit |
+                    MFRC522.ErrorReg_CollErr_bit | MFRC522.ErrorReg_BufferOvfl_bit;
 
-            // if ((ReadSpi(ErrorReg) & 0x1B) == WriteMask)
-            // {
-            //     status = OK;
+                if ((errorByte & fatalErrorsMask) == 0) // no fatal error occured
+                {
+                    status = Status.OK;
 
-            //     if (Convert.ToBoolean(n & enabledIrqRequestTypes & 0x01))
-            //     {
-            //         status = NoTag;
-            //     }
+                    if (command == MFRC522.Command_Transceive)
+                    {
+                        byte numberOfBytesStoredInFIFO = this.ReadRegister(MFRC522.FIFOLevelReg);
 
-            //     if (command == Transceive)
-            //     {
-            //         n = ReadSpi(FIFOLevelReg);
-            //         byte? lastBits = (byte)(ReadSpi(ControlReg) & 0x07);
-            //         if (lastBits != 0)
-            //         {
-            //             backLen = (byte)(((n - 1) * 8) + (byte)lastBits);
-            //         }
-            //         else
-            //         {
-            //             backLen = (byte)(n * 8);
-            //         }
+                        int lastBits = this.ReadRegister(MFRC522.ControlReg) & MFRC522.ControlReg_RxLastBits;
+                        backLen = lastBits != 0 ?
+                            (numberOfBytesStoredInFIFO - 1) * 8 + lastBits :
+                            numberOfBytesStoredInFIFO * 8;
 
-            //         if (n == 0)
-            //         {
-            //             n = 1;
-            //         }
+                        if (numberOfBytesStoredInFIFO == 0)
+                            numberOfBytesStoredInFIFO = 1;
+                        if (numberOfBytesStoredInFIFO > 16)
+                            numberOfBytesStoredInFIFO = 16;
 
-            //         if (n > MAX_LEN)
-            //         {
-            //             n = MAX_LEN;
-            //         }
+                        int i = 0;
+                        while (i++ < numberOfBytesStoredInFIFO)
+                        {
+                            backData.Add(this.ReadRegister(MFRC522.FIFODataReg));
+                        }
+                    }
+                }
+                else
+                {
+                    status = Status.Error;
+                }
+            }
 
-            //         i = 0;
-            //         while (i < n)
-            //         {
-            //             backData.Add(ReadSpi(FIFODataReg));
-            //             i++;
-            //         }
-            //     }
-            // }
-            // else
-            // {
-            //     status = Error;
-            // }
-
-            return (status, backData, backLen);
+            return (status, backData.ToArray(), backLen);
         }
 
         private void WriteVersionAndSelfTestResult(byte rawVersion, byte[] selfTestResult)
@@ -405,55 +449,78 @@ namespace RFID522
 
         private void AntennaOn()
         {
-            const byte Tx1RFEn_bit = 1;
-            const byte Tx2RFEn_bit = 2;
-            const byte Tx12RFEnabled_bits = Tx1RFEn_bit & Tx2RFEn_bit;
+            const byte Tx12RFEnabled_bits = MFRC522.TxControlReg_Tx1RFEn_bit | MFRC522.TxControlReg_Tx2RFEn_bit;
 
             byte temp = this.ReadRegister(MFRC522.TxControlReg);
-            if (((byte) (temp & Tx12RFEnabled_bits)) == 0)
+            if ((temp & Tx12RFEnabled_bits) != Tx12RFEnabled_bits)
             {
                 this.SetBitMaskForRegister(MFRC522.TxControlReg, Tx12RFEnabled_bits);
             }
         }
 
-        private void SetBitMaskForRegister(byte address, byte bitmask)
+        private void AntennaOff()
         {
-            byte temp = this.ReadRegister(address);
-            this.WriteRegister(address, (byte) (temp | bitmask));
+            const byte Tx12RFEnabled_bits = MFRC522.TxControlReg_Tx1RFEn_bit | MFRC522.TxControlReg_Tx2RFEn_bit;
+
+            this.SetBitMaskForRegister(MFRC522.TxControlReg, Tx12RFEnabled_bits);
         }
 
-        private void ClearBitMaskForRegister(byte address, byte bitmask)
+        private void SetBitMaskForRegister(byte address, byte bitmask, bool log = false)
         {
             byte temp = this.ReadRegister(address);
-            this.WriteRegister(address, (byte) (temp & (~bitmask)));
+            temp = (byte) (temp | bitmask);
+            if (log)
+            {
+                System.Console.WriteLine($".set={address:X2}h, val={temp:X2}h");
+            }
+            this.WriteRegister(address, temp);
         }
 
-        private void WriteRegister(byte address, byte value)
+        private void ClearBitMaskForRegister(byte address, byte bitmask, bool log = false)
+        {
+            byte temp = this.ReadRegister(address);
+            temp = (byte) (temp & (~bitmask));
+            if (log)
+            {
+                System.Console.WriteLine($".clr={address:X2}h, val={temp:X2}h.");
+            }
+            this.WriteRegister(address, temp);
+        }
+
+        private void WriteRegister(byte address, byte value, bool log = false)
         {
             Span<byte> buffer = stackalloc byte[2]
             {
-                GetAddressByte(address),
-                value
+            GetAddressByte(address),
+            value
             };
+            if (log)
+            {
+                System.Console.WriteLine($".wri={address:X2}h, buf={buffer[1]:X2}h");
+            }
 
             _spiDevice.Write(buffer);
         }
 
-        private byte ReadRegister(byte address)
+        private byte ReadRegister(byte address, bool log = false)
         {
             Span<byte> buffer = stackalloc byte[2]
             {
-                GetAddressByte(address, true),
-                0
+            GetAddressByte(address, true),
+            0
             };
             _spiDevice.TransferFullDuplex(buffer, buffer);
+            if (log)
+            {
+                System.Console.WriteLine($".read={address:X2}h, buf={buffer[1]:X2}h");
+            }
             return buffer[1];
         }
 
         // Calculate address byte according to MFRC522 documentation, section 8.1.2.3
         private byte GetAddressByte(byte address, bool forRead = false)
         {
-            // Set MSB of the address byte to 1 for read, 0 to write 
+            // Set MSB of the address byte to 1 for read, 0 to write
             const byte ReadMask = 0x80;
             const byte WriteMask = 0x00;
 
