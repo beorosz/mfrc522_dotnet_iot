@@ -1,6 +1,10 @@
-public enum Status
+namespace RFID522
 {
-    OK = 0,
-    NoTag,
-    Error
+    public enum Status
+    {
+        OK = 1,
+        NoTag,
+        Error,
+        Collision
+    }
 }

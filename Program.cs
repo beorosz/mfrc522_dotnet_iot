@@ -31,16 +31,23 @@ namespace RFID522
             Console.WriteLine("Start scanning for tags...");
             while (true)
             {
-                var requestStatus = mfrc.Request(PICC_COMMAND_REQUEST_A);
-                if (requestStatus == Status.OK)
+                var requestResult = mfrc.Request(PICC_COMMAND_REQUEST_A);                
+                if ((requestResult.status == Status.OK) || (requestResult.status == Status.Collision))
                 {
-                    var(antiCollStatus, serialNumber) = mfrc.AntiCollision(PICC_COMMAND_SEL_CL1);
                     var sb = new StringBuilder();
-                    foreach (var dataByte in serialNumber)
+                    foreach (var dataByte in requestResult.backData)
                     {
-                        sb.Append($"{dataByte:X2}");
+                        sb.Append($"{Convert.ToString(dataByte, 2).PadLeft(8, '0')}-");
                     }
-                    System.Console.WriteLine($"Status={antiCollStatus}, data={sb.ToString()}");
+                    System.Console.WriteLine($"ATQA: {sb.ToString()}");
+                    var(antiCollStatus, serialNumber) = mfrc.AntiCollision(PICC_COMMAND_SEL_CL1);
+                    
+                    // var sb = new StringBuilder();
+                    // foreach (var dataByte in serialNumber)
+                    // {
+                    //     sb.Append($"{dataByte:X2}");
+                    // }
+                    // System.Console.WriteLine($"Status={antiCollStatus}, data={sb.ToString()}");
                 }
                 Thread.Sleep(500);
             }
